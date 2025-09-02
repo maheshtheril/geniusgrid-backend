@@ -7,6 +7,7 @@ const express_1 = require("express");
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const db_1 = require("../db");
+const audit_1 = require("../audit");
 const r = (0, express_1.Router)();
 const JWT_SECRET = process.env.JWT_SECRET || "secret";
 // Signup (creates tenant, company, admin user)
@@ -129,7 +130,7 @@ r.post("/signup", async (req, res) => {
        ($1,$2,$3,'lost','Lost',5,0)`, [tenantId, companyId, pipelineId]);
         // 8️⃣ Issue JWT token
         const token = jsonwebtoken_1.default.sign({ userId, tenantId }, JWT_SECRET, { expiresIn: "8h" });
-        await logAudit(db_1.pool, {
+        await (0, audit_1.logAudit)(db_1.pool, {
             tenant_id: tenantId,
             company_id: companyId,
             actor_id: userId,

@@ -2,6 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { pool } from "../db";
+import { logAudit } from "../audit";
 
 const r = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "secret";

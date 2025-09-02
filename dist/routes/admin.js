@@ -15,7 +15,8 @@ r.post("/roles", async (req, res) => {
     const { tenantId, actorId } = (0, rls_1.ctx)(req);
     const { name } = req.body;
     const q = await db_1.pool.query(`INSERT INTO role (tenant_id, name) VALUES ($1,$2) RETURNING role_id`, [tenantId, name]);
-    await (0, audit_1.logAudit)(db_1.pool, { tenant_id: tenantId, actor_id: actorId, action: "CREATE", entity: "role", entity_id: q.rows[0].role_id });
+    await (0, audit_1.logAudit)(db_1.pool, { tenant_id: tenantId, actor_id: actorId ?? "system",
+        action: "CREATE", entity: "role", entity_id: q.rows[0].role_id });
     res.json(q.rows[0]);
 });
 // Assign role

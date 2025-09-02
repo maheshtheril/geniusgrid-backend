@@ -2,6 +2,8 @@ import { Router } from "express";
 import { pool } from "../db";
 import { ctx } from "../rls";
 import { logAudit } from "../audit";
+import { Request, Response } from "express";
+
 
 const r = Router();
 
@@ -19,7 +21,8 @@ r.post("/roles", async (req, res) => {
     `INSERT INTO role (tenant_id, name) VALUES ($1,$2) RETURNING role_id`,
     [tenantId, name]
   );
-  await logAudit(pool, { tenant_id: tenantId, actor_id: actorId, action: "CREATE", entity: "role", entity_id: q.rows[0].role_id });
+  await logAudit(pool, { tenant_id: tenantId, actor_id: actorId ?? "system"
+, action: "CREATE", entity: "role", entity_id: q.rows[0].role_id });
   res.json(q.rows[0]);
 });
 
