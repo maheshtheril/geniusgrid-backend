@@ -18,9 +18,16 @@
     "pg": "^8.11.0"
   },
   "engines": {
-  "node": "20.x"
-},
+    "node": "20.x"
+  },
   "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.3.0",
+    "@types/pg": "^8.15.5",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"
   }
