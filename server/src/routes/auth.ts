@@ -1,8 +1,10 @@
 import { Router } from "express";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { pool } from "../db";
 import { logAudit } from "../audit";
+import { Request, Response } from "express";
+
 
 const r = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "secret";
