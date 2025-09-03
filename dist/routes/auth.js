@@ -4,7 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
-const bcrypt_1 = __importDefault(require("bcrypt"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const db_1 = require("../db");
 const audit_1 = require("../audit");
@@ -24,7 +24,7 @@ r.post("/signup", async (req, res) => {
         const companyId = companyRes.rows[0].company_id;
         const roleRes = await client.query(`INSERT INTO role (tenant_id, name) VALUES ($1,'Admin') RETURNING role_id`, [tenantId]);
         const roleId = roleRes.rows[0].role_id;
-        const hash = await bcrypt_1.default.hash(password, 10);
+        const hash = await bcryptjs_1.default.hash(password, 10);
         const userRes = await client.query(`INSERT INTO app_user (tenant_id, company_id, email, password_hash, display_name)
        VALUES ($1,$2,$3,$4,$5) RETURNING user_id`, [tenantId, companyId, email, hash, "Admin User"]);
         const userId = userRes.rows[0].user_id;
@@ -51,7 +51,7 @@ r.post("/login", async (req, res) => {
     if (userRes.rowCount === 0)
         return res.status(401).json({ error: "Invalid email" });
     const user = userRes.rows[0];
-    const ok = await bcrypt_1.default.compare(password, user.password_hash);
+    const ok = await bcryptjs_1.default.compare(password, user.password_hash);
     if (!ok)
         return res.status(401).json({ error: "Invalid password" });
     const token = jsonwebtoken_1.default.sign({ userId: user.user_id, tenantId: user.tenant_id, companyId: user.company_id }, JWT_SECRET);
@@ -105,7 +105,7 @@ r.post("/signup", async (req, res) => {
        RETURNING role_id`, [tenantId]);
         const roleId = roleRes.rows[0].role_id;
         // 4️⃣ Hash password and create user
-        const hash = await bcrypt_1.default.hash(password, 10);
+        const hash = await bcryptjs_1.default.hash(password, 10);
         const userRes = await db_1.pool.query(`INSERT INTO app_user (tenant_id, company_id, email, password_hash, display_name, status)
        VALUES ($1,$2,$3,$4,$5,'active')
        RETURNING user_id`, [tenantId, companyId, email, hash, displayName || "Admin User"]);
