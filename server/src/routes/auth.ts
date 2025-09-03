@@ -58,49 +58,21 @@ r.post("/signup", async (req: Request, res: Response) => {
       [userId, roleId]
     );
 
-    // 6️⃣ Menu seed
-    await client.query(
-      `INSERT INTO menu_item (tenant_id, label, path, icon, roles, order_index) VALUES
-       ($1,'Dashboard','/dashboard','home','{Admin}',1),
-       ($1,'CRM','/crm','users','{Admin,Sales}',2),
-       ($1,'Admin','/admin','settings','{Admin}',3)`,
-      [tenantId]
-    );
-
-    // 7️⃣ Pipeline seed
-    const pipeRes = await client.query(
-      `INSERT INTO pipelines (tenant_id, company_id, name)
-       VALUES ($1,$2,'Sales Pipeline')
-       RETURNING pipeline_id`,
-      [tenantId, companyId]
-    );
-    const pipelineId = pipeRes.rows[0].pipeline_id;
-
-    await client.query(
-      `INSERT INTO stages (tenant_id, company_id, pipeline_id, key, name, order_index, win_probability) VALUES
-       ($1,$2,$3,'new','New',1,10),
-       ($1,$2,$3,'qualified','Qualified',2,30),
-       ($1,$2,$3,'proposal','Proposal',3,60),
-       ($1,$2,$3,'won','Won',4,100),
-       ($1,$2,$3,'lost','Lost',5,0)`,
-      [tenantId, companyId, pipelineId]
-    );
-
-    // 8️⃣ Commit + JWT
     await client.query("COMMIT");
+
+    // 🔑 Return token + user with role "Admin"
     const token = jwt.sign({ userId, tenantId, companyId }, JWT_SECRET, { expiresIn: "8h" });
-
-    await logAudit(pool, {
-      tenant_id: tenantId,
-      company_id: companyId,
-      actor_id: userId,
-      action: "CREATE",
-      entity: "tenant",
-      entity_id: tenantId,
-      after_json: { tenantName, slug, email }
+    res.json({
+      token,
+      user: {
+        id: userId,
+        email,
+        name: displayName || "Admin User",
+        roles: ["Admin"],
+      },
+      tenantId,
+      slug,
     });
-
-    res.json({ token, tenantId, userId });
   } catch (err: any) {
     await client.query("ROLLBACK");
     console.error("Signup error:", err);
@@ -111,16 +83,12 @@ r.post("/signup", async (req: Request, res: Response) => {
 });
 
 // ================== LOGIN ==================
-// ================== LOGIN ==================
 r.post("/login", async (req: Request, res: Response) => {
   const { email, password, slug } = req.body;
 
   try {
     // 1. Validate tenant
-    const tenantRes = await pool.query(
-      "SELECT tenant_id FROM tenant WHERE slug = $1",
-      [slug]
-    );
+    const tenantRes = await pool.query("SELECT tenant_id FROM tenant WHERE slug = $1", [slug]);
     if (tenantRes.rowCount === 0) {
       return res.status(401).json({ error: "Invalid tenant" });
     }
@@ -142,7 +110,7 @@ r.post("/login", async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid password" });
     }
 
-    // 4. Fetch user roles
+    // 4. Fetch roles & normalize to "Admin"
     const roleRes = await pool.query(
       `SELECT r.name 
        FROM user_role ur
@@ -150,7 +118,9 @@ r.post("/login", async (req: Request, res: Response) => {
        WHERE ur.user_id = $1`,
       [user.user_id]
     );
-    const roles = roleRes.rows.map(r => r.name);
+    const roles = roleRes.rows.map((r) =>
+      r.name.toLowerCase() === "administrator" ? "Admin" : r.name
+    );
 
     // 5. Generate token
     const token = jwt.sign(
@@ -159,24 +129,22 @@ r.post("/login", async (req: Request, res: Response) => {
       { expiresIn: "8h" }
     );
 
-    // 6. Send response
     res.json({
       token,
       user: {
         id: user.user_id,
         email: user.email,
         name: user.display_name,
-        roles
+        roles,
       },
       tenantId: user.tenant_id,
-      slug
+      slug,
     });
   } catch (err: any) {
     console.error("Login error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 // ================== PROFILE ==================
 r.get("/profile", async (req: Request, res: Response) => {
@@ -203,11 +171,15 @@ r.get("/profile", async (req: Request, res: Response) => {
     }
 
     const user = userRes.rows[0];
+    const roles = (user.roles || []).map((r: string) =>
+      r && r.toLowerCase() === "administrator" ? "Admin" : r
+    );
+
     res.json({
       userId: user.user_id,
       name: user.display_name,
       email: user.email,
-      roles: user.roles.filter((r: string) => r !== null),
+      roles,
     });
   } catch (e: any) {
     res.status(401).json({ error: "Invalid token" });
