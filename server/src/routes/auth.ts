@@ -2,25 +2,10 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { pool } from "../db";
-import { logAudit } from "../audit";
+import { logAudit } from "../audit"; // keep if you already have this
 
 const r = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "secret";
-
-// ================== HELPERS ==================
-function issueToken(res: Response, payload: object) {
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "8h" });
-
-  res.cookie("token", token, {
-    httpOnly: true,
-    secure: true,          // HTTPS only (Render is always HTTPS)
-    sameSite: "none",      // ✅ FIX: allow cross-site cookie
-    path: "/",
-    maxAge: 8 * 60 * 60 * 1000, // 8h
-  });
-
-  return token;
-}
 
 // ================== SIGNUP ==================
 r.post("/signup", async (req: Request, res: Response) => {
@@ -50,8 +35,8 @@ r.post("/signup", async (req: Request, res: Response) => {
 
     // 3️⃣ Role (Admin)
     const roleRes = await client.query(
-      `INSERT INTO role (tenant_id, name)
-       VALUES ($1,'Admin')
+      `INSERT INTO role (tenant_id, key, name, permissions)
+       VALUES ($1,'admin','Administrator',ARRAY['*'])
        RETURNING role_id`,
       [tenantId]
     );
@@ -68,16 +53,14 @@ r.post("/signup", async (req: Request, res: Response) => {
     const userId = userRes.rows[0].user_id;
 
     // 5️⃣ User-Role link
-    await client.query(
-      `INSERT INTO user_role (user_id, role_id) VALUES ($1,$2)`,
-      [userId, roleId]
-    );
+    await client.query(`INSERT INTO user_role (user_id, role_id) VALUES ($1,$2)`, [userId, roleId]);
 
     await client.query("COMMIT");
 
-    // 6️⃣ Issue JWT + set cookie
-    const token = issueToken(res, { userId, tenantId, companyId });
+    // 6️⃣ Sign JWT
+    const token = jwt.sign({ userId, tenantId, companyId }, JWT_SECRET, { expiresIn: "8h" });
 
+    // 7️⃣ Optional audit
     await logAudit(pool, {
       tenant_id: tenantId,
       company_id: companyId,
@@ -114,46 +97,35 @@ r.post("/login", async (req: Request, res: Response) => {
   const { email, password, slug } = req.body;
 
   try {
-    // 1️⃣ Validate tenant
-    const tenantRes = await pool.query("SELECT tenant_id FROM tenant WHERE slug = $1", [slug]);
-    if (tenantRes.rowCount === 0) {
-      return res.status(401).json({ error: "Invalid tenant" });
-    }
+    // Tenant check
+    const tenantRes = await pool.query("SELECT tenant_id FROM tenant WHERE slug=$1", [slug]);
+    if (!tenantRes.rowCount) return res.status(401).json({ error: "Invalid tenant" });
     const tenantId = tenantRes.rows[0].tenant_id;
 
-    // 2️⃣ Find user in tenant
+    // User lookup
     const userRes = await pool.query(
-      "SELECT * FROM app_user WHERE email = $1 AND tenant_id = $2",
+      "SELECT * FROM app_user WHERE email=$1 AND tenant_id=$2 AND status='active'",
       [email, tenantId]
     );
-    if (userRes.rowCount === 0) {
-      return res.status(401).json({ error: "Invalid email" });
-    }
+    if (!userRes.rowCount) return res.status(401).json({ error: "Invalid email" });
     const user = userRes.rows[0];
 
-    // 3️⃣ Check password
+    // Password check
     const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) {
-      return res.status(401).json({ error: "Invalid password" });
-    }
+    if (!ok) return res.status(401).json({ error: "Invalid password" });
 
-    // 4️⃣ Fetch roles
+    // Roles
     const roleRes = await pool.query(
-      `SELECT r.name 
+      `SELECT r.key, r.name, r.permissions
        FROM user_role ur
        JOIN role r ON ur.role_id = r.role_id
        WHERE ur.user_id = $1`,
       [user.user_id]
     );
-    const roles = roleRes.rows.map((r) =>
-      r.name.toLowerCase() === "administrator" ? "Admin" : r.name
-    );
 
-    // 5️⃣ Issue JWT + cookie
-    const token = issueToken(res, {
-      userId: user.user_id,
-      tenantId: user.tenant_id,
-      companyId: user.company_id,
+    // JWT
+    const token = jwt.sign({ userId: user.user_id, tenantId: user.tenant_id }, JWT_SECRET, {
+      expiresIn: "8h",
     });
 
     res.json({
@@ -163,7 +135,7 @@ r.post("/login", async (req: Request, res: Response) => {
         id: user.user_id,
         email: user.email,
         name: user.display_name,
-        roles,
+        roles: roleRes.rows,
       },
       tenantId: user.tenant_id,
       slug,
@@ -176,48 +148,44 @@ r.post("/login", async (req: Request, res: Response) => {
 
 // ================== PROFILE ==================
 r.get("/profile", async (req: Request, res: Response) => {
-  try {
-    const token = req.cookies?.token || req.headers.authorization?.replace("Bearer ", "");
-    if (!token) return res.status(401).json({ error: "No token" });
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "No token" });
 
+  try {
     const payload: any = jwt.verify(token, JWT_SECRET);
 
     const userRes = await pool.query(
       `SELECT u.user_id, u.email, u.display_name, 
-              ARRAY_AGG(r.name) as roles
+              ARRAY_AGG(DISTINCT r.name) AS roles,
+              ARRAY_AGG(DISTINCT unnest(r.permissions)) AS permissions
        FROM app_user u
-       LEFT JOIN user_role ur ON u.user_id = ur.user_id
-       LEFT JOIN role r ON ur.role_id = r.role_id
+       JOIN user_role ur ON u.user_id = ur.user_id
+       JOIN role r ON ur.role_id = r.role_id
        WHERE u.user_id=$1
        GROUP BY u.user_id`,
       [payload.userId]
     );
 
-    if (userRes.rowCount === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (!userRes.rowCount) return res.status(404).json({ error: "User not found" });
 
     const user = userRes.rows[0];
-    const roles = (user.roles || []).map((r: string) =>
-      r && r.toLowerCase() === "administrator" ? "Admin" : r
-    );
-
     res.json({
       id: user.user_id,
-      name: user.display_name,
       email: user.email,
-      roles,
+      name: user.display_name,
+      roles: user.roles,
+      permissions: user.permissions,
     });
-  } catch (e: any) {
-    console.error("Profile error:", e);
+  } catch {
     res.status(401).json({ error: "Invalid token" });
   }
 });
 
 // ================== LOGOUT ==================
 r.post("/logout", (req: Request, res: Response) => {
-  res.clearCookie("token", { path: "/" });
-  res.json({ success: true, message: "Logged out successfully" });
+  // With localStorage JWT → logout is FE-only
+  res.json({ success: true, message: "Clear token from localStorage" });
 });
 
 export default r;

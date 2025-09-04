@@ -1,14 +1,13 @@
-// server/src/index.ts
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
-import cookieParser from "cookie-parser";
 
 import authRoutes from "./routes/auth";
 import adminRoutes from "./routes/admin";
 import crmRoutes from "./routes/crm";
 import metadataRoutes from "./routes/metadata";
+import { requireAuth } from "./middleware/requireAuth";
 
 dotenv.config();
 
@@ -16,11 +15,10 @@ const app = express();
 
 // ✅ Allowed frontend origins
 const allowedOrigins = [
-  "https://geniusgrid-frontend.onrender.com",
-  "http://localhost:3000", // local dev
+  process.env.FRONTEND_URL || "http://localhost:3000",
 ];
 
-// ✅ Strict CORS setup with credentials (cookies)
+// ✅ Strict CORS setup (JWT in Authorization header, no cookies needed)
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
@@ -29,7 +27,7 @@ const corsOptions: cors.CorsOptions = {
       callback(new Error("Not allowed by CORS"));
     }
   },
-  credentials: true, // 🔑 allow cookies
+  credentials: true, // allow Authorization header
 };
 
 // ✅ Apply CORS + preflight
@@ -38,7 +36,6 @@ app.options("*", cors(corsOptions));
 
 // ✅ Middleware
 app.use(express.json());
-app.use(cookieParser()); // 🔑 parse cookies
 
 // ✅ Health check
 app.get("/health", (req, res) => {
@@ -53,13 +50,13 @@ app.get("/health", (req, res) => {
 app.use("/uploads", express.static(process.env.UPLOAD_DIR || "uploads"));
 
 // ✅ Routes
-app.use("/auth", authRoutes);
-app.use("/admin", adminRoutes);
-app.use("/crm", crmRoutes);
-app.use("/metadata", metadataRoutes);
+app.use("/auth", authRoutes);                        // public
+app.use("/admin", requireAuth, adminRoutes);         // protected
+app.use("/crm", requireAuth, crmRoutes);             // protected
+app.use("/metadata", metadataRoutes);                // maybe public, adjust if needed
 
 // ✅ Start server
 const port = process.env.PORT || 4000;
 app.listen(port, () => {
-  console.log(`Backend running on port ${port}`);
+  console.log(`✅ Backend running on port ${port}`);
 });
