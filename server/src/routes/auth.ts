@@ -13,10 +13,10 @@ function issueToken(res: Response, payload: object) {
 
   res.cookie("token", token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production", // HTTPS only in production
-    sameSite: "lax",
-    maxAge: 8 * 60 * 60 * 1000, // 8h
+    secure: true,          // HTTPS only (Render is always HTTPS)
+    sameSite: "none",      // ✅ FIX: allow cross-site cookie
     path: "/",
+    maxAge: 8 * 60 * 60 * 1000, // 8h
   });
 
   return token;
@@ -137,7 +137,7 @@ r.post("/login", async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid password" });
     }
 
-    // 4️⃣ Fetch roles & normalize
+    // 4️⃣ Fetch roles
     const roleRes = await pool.query(
       `SELECT r.name 
        FROM user_role ur
@@ -177,9 +177,7 @@ r.post("/login", async (req: Request, res: Response) => {
 // ================== PROFILE ==================
 r.get("/profile", async (req: Request, res: Response) => {
   try {
-    // ✅ Read token from cookie OR Authorization header
-    const token =
-      req.cookies?.token || req.headers.authorization?.replace("Bearer ", "");
+    const token = req.cookies?.token || req.headers.authorization?.replace("Bearer ", "");
     if (!token) return res.status(401).json({ error: "No token" });
 
     const payload: any = jwt.verify(token, JWT_SECRET);
