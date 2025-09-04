@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: geniusgrid-backend
+    env: node
+    plan: free
+    buildCommand: |
+      npm ci
+      npm run build
+    startCommand: |
+      npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # If you want CORS to be strict via ENV (recommended),
+      # read this in your index.ts and allow this single origin.
+      - key: FRONTEND_URL
+        fromService:
+          type: web
+          name: geniusgrid-frontend
+          property: url
+      # Attach managed Postgres from the database section below:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: geniusgrid-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+
+databases:
+  - name: geniusgrid-db
+    databaseName: geniusgrid
+    plan: free
