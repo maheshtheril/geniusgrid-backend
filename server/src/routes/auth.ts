@@ -1,11 +1,31 @@
+// routes/auth.ts
 import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { pool } from "../db";
-import { logAudit } from "../audit"; // keep if you already have this
+import { logAudit } from "../audit";
 
 const r = Router();
-const JWT_SECRET = process.env.JWT_SECRET || "secret";
+const JWT_SECRET = process.env.JWT_SECRET || "secret"; // set real secret in env in production
+
+// ===== DEBUG (temporary) =====
+// Returns only sha256(JWT_SECRET) — safe to expose short-term for debugging.
+// REMOVE this route after you finish debugging.
+r.get("/_debug/secret-hash", (req: Request, res: Response) => {
+  try {
+    const s = process.env.JWT_SECRET || "";
+    const h = crypto.createHash("sha256").update(s).digest("hex");
+    return res.json({ ok: true, sha256: h });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Utility: create JWT token (consistent payload + expiry)
+function makeToken(payload: object) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "8h" });
+}
 
 // ================== SIGNUP ==================
 r.post("/signup", async (req: Request, res: Response) => {
@@ -13,9 +33,12 @@ r.post("/signup", async (req: Request, res: Response) => {
   const client = await pool.connect();
 
   try {
+    if (!tenantName || !slug || !email || !password) {
+      return res.status(400).json({ error: "tenantName, slug, email and password are required" });
+    }
+
     await client.query("BEGIN");
 
-    // 1️⃣ Tenant
     const tenantRes = await client.query(
       `INSERT INTO tenant (name, slug, region, plan, status)
        VALUES ($1,$2,$3,$4,'active')
@@ -24,7 +47,6 @@ r.post("/signup", async (req: Request, res: Response) => {
     );
     const tenantId = tenantRes.rows[0].tenant_id;
 
-    // 2️⃣ Company
     const companyRes = await client.query(
       `INSERT INTO company (tenant_id, name)
        VALUES ($1,$2)
@@ -33,7 +55,6 @@ r.post("/signup", async (req: Request, res: Response) => {
     );
     const companyId = companyRes.rows[0].company_id;
 
-    // 3️⃣ Role (Admin)
     const roleRes = await client.query(
       `INSERT INTO role (tenant_id, key, name, permissions)
        VALUES ($1,'admin','Administrator',ARRAY['*'])
@@ -42,7 +63,6 @@ r.post("/signup", async (req: Request, res: Response) => {
     );
     const roleId = roleRes.rows[0].role_id;
 
-    // 4️⃣ User (Admin)
     const hash = await bcrypt.hash(password, 10);
     const userRes = await client.query(
       `INSERT INTO app_user (tenant_id, company_id, email, password_hash, display_name, status)
@@ -52,26 +72,28 @@ r.post("/signup", async (req: Request, res: Response) => {
     );
     const userId = userRes.rows[0].user_id;
 
-    // 5️⃣ User-Role link
     await client.query(`INSERT INTO user_role (user_id, role_id) VALUES ($1,$2)`, [userId, roleId]);
 
     await client.query("COMMIT");
 
-    // 6️⃣ Sign JWT
-    const token = jwt.sign({ userId, tenantId, companyId }, JWT_SECRET, { expiresIn: "8h" });
+    const token = makeToken({ userId, tenantId, companyId });
 
-    // 7️⃣ Optional audit
-    await logAudit(pool, {
-      tenant_id: tenantId,
-      company_id: companyId,
-      actor_id: userId,
-      action: "CREATE",
-      entity: "tenant",
-      entity_id: tenantId,
-      after_json: { tenantName, slug, email },
-    });
+    // optional audit — best-effort
+    try {
+      await logAudit(pool, {
+        tenant_id: tenantId,
+        company_id: companyId,
+        actor_id: userId,
+        action: "CREATE",
+        entity: "tenant",
+        entity_id: tenantId,
+        after_json: { tenantName, slug, email },
+      });
+    } catch (ae) {
+      console.warn("audit log failed", ae);
+    }
 
-    res.json({
+    return res.json({
       success: true,
       token,
       user: {
@@ -84,9 +106,9 @@ r.post("/signup", async (req: Request, res: Response) => {
       slug,
     });
   } catch (err: any) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
     console.error("Signup error:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message || "Signup failed" });
   } finally {
     client.release();
   }
@@ -97,24 +119,24 @@ r.post("/login", async (req: Request, res: Response) => {
   const { email, password, slug } = req.body;
 
   try {
-    // Tenant check
+    if (!email || !password || !slug) {
+      return res.status(400).json({ error: "email, password and slug required" });
+    }
+
     const tenantRes = await pool.query("SELECT tenant_id FROM tenant WHERE slug=$1", [slug]);
     if (!tenantRes.rowCount) return res.status(401).json({ error: "Invalid tenant" });
     const tenantId = tenantRes.rows[0].tenant_id;
 
-    // User lookup
     const userRes = await pool.query(
       "SELECT * FROM app_user WHERE email=$1 AND tenant_id=$2 AND status='active'",
       [email, tenantId]
     );
-    if (!userRes.rowCount) return res.status(401).json({ error: "Invalid email" });
+    if (!userRes.rowCount) return res.status(401).json({ error: "Invalid email or password" });
+
     const user = userRes.rows[0];
-
-    // Password check
     const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) return res.status(401).json({ error: "Invalid password" });
+    if (!ok) return res.status(401).json({ error: "Invalid email or password" });
 
-    // Roles
     const roleRes = await pool.query(
       `SELECT r.key, r.name, r.permissions
        FROM user_role ur
@@ -123,12 +145,9 @@ r.post("/login", async (req: Request, res: Response) => {
       [user.user_id]
     );
 
-    // JWT
-    const token = jwt.sign({ userId: user.user_id, tenantId: user.tenant_id }, JWT_SECRET, {
-      expiresIn: "8h",
-    });
+    const token = makeToken({ userId: user.user_id, tenantId: user.tenant_id });
 
-    res.json({
+    return res.json({
       success: true,
       token,
       user: {
@@ -142,18 +161,25 @@ r.post("/login", async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error("Login error:", err);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
 // ================== PROFILE ==================
 r.get("/profile", async (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const authHeader = req.headers.authorization as string | undefined;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader ?? null;
   if (!token) return res.status(401).json({ error: "No token" });
 
   try {
-    const payload: any = jwt.verify(token, JWT_SECRET);
+    let payload: any;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch (ve: any) {
+      // log detailed verify error to server logs (do NOT log the secret)
+      console.error("JWT verify failed:", { name: ve.name, message: ve.message });
+      return res.status(401).json({ error: "Invalid token", details: ve.message });
+    }
 
     const userRes = await pool.query(
       `SELECT u.user_id, u.email, u.display_name, 
@@ -170,22 +196,23 @@ r.get("/profile", async (req: Request, res: Response) => {
     if (!userRes.rowCount) return res.status(404).json({ error: "User not found" });
 
     const user = userRes.rows[0];
-    res.json({
+    return res.json({
       id: user.user_id,
       email: user.email,
       name: user.display_name,
-      roles: user.roles,
-      permissions: user.permissions,
+      roles: user.roles || [],
+      permissions: user.permissions || [],
     });
-  } catch {
-    res.status(401).json({ error: "Invalid token" });
+  } catch (err: any) {
+    console.error("Profile error:", err);
+    return res.status(500).json({ error: "Failed to get profile" });
   }
 });
 
 // ================== LOGOUT ==================
 r.post("/logout", (req: Request, res: Response) => {
-  // With localStorage JWT → logout is FE-only
-  res.json({ success: true, message: "Clear token from localStorage" });
+  // JWT stored in client localStorage → logout is FE-only; server can optionally blacklist if implemented.
+  return res.json({ success: true, message: "Clear token from localStorage" });
 });
 
 export default r;
