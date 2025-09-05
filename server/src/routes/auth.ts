@@ -166,6 +166,7 @@ r.post("/login", async (req: Request, res: Response) => {
 });
 
 // ================== PROFILE ==================
+// safe /profile handler — replace existing handler
 r.get("/profile", async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization as string | undefined;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader ?? null;
@@ -176,38 +177,58 @@ r.get("/profile", async (req: Request, res: Response) => {
     try {
       payload = jwt.verify(token, JWT_SECRET);
     } catch (ve: any) {
-      // log detailed verify error to server logs (do NOT log the secret)
       console.error("JWT verify failed:", { name: ve.name, message: ve.message });
       return res.status(401).json({ error: "Invalid token", details: ve.message });
     }
 
-    const userRes = await pool.query(
-      `SELECT u.user_id, u.email, u.display_name, 
-              ARRAY_AGG(DISTINCT r.name) AS roles,
-              ARRAY_AGG(DISTINCT unnest(r.permissions)) AS permissions
-       FROM app_user u
-       JOIN user_role ur ON u.user_id = ur.user_id
+    // safer: get roles and permissions in separate/robust subquery to avoid unnest issues
+    const q = `
+      SELECT u.user_id, u.email, u.display_name
+      FROM app_user u
+      WHERE u.user_id = $1
+    `;
+    const ures = await pool.query(q, [payload.userId]);
+    if (!ures.rowCount) return res.status(404).json({ error: "User not found" });
+
+    // roles array
+    const rolesRes = await pool.query(
+      `SELECT COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), ARRAY[]::text[]) AS roles
+       FROM user_role ur
        JOIN role r ON ur.role_id = r.role_id
-       WHERE u.user_id=$1
-       GROUP BY u.user_id`,
+       WHERE ur.user_id = $1`,
       [payload.userId]
     );
 
-    if (!userRes.rowCount) return res.status(404).json({ error: "User not found" });
+    // permissions via subquery that unnests only role.permissions for that user
+    const permsRes = await pool.query(
+      `SELECT COALESCE(array_agg(DISTINCT p) , ARRAY[]::text[]) AS permissions
+       FROM (
+         SELECT unnest(r.permissions) AS p
+         FROM user_role ur
+         JOIN role r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1 AND r.permissions IS NOT NULL
+       ) sub`,
+      [payload.userId]
+    );
 
-    const user = userRes.rows[0];
+    const user = ures.rows[0];
+    const roles = rolesRes.rows[0]?.roles || [];
+    const permissions = permsRes.rows[0]?.permissions || [];
+
     return res.json({
       id: user.user_id,
       email: user.email,
       name: user.display_name,
-      roles: user.roles || [],
-      permissions: user.permissions || [],
+      roles,
+      permissions,
     });
   } catch (err: any) {
-    console.error("Profile error:", err);
+    // <-- IMPORTANT: full error logged for debugging (check Render logs)
+    console.error("Profile error:", err && err.stack ? err.stack : err);
     return res.status(500).json({ error: "Failed to get profile" });
   }
 });
+
 
 // ================== LOGOUT ==================
 r.post("/logout", (req: Request, res: Response) => {
