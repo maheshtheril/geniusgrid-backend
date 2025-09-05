@@ -13,24 +13,24 @@ dotenv.config();
 
 const app = express();
 
-// ✅ Allowed frontend origins
+// ✅ Allowed frontend origins (Render FE + local dev)
 const allowedOrigins = [
   process.env.FRONTEND_URL || "https://geniusgrid-frontend.onrender.com",
   "http://localhost:3000",
 ];
 
-// ✅ CORS (must be BEFORE routes)
+// ✅ CORS (must be before routes)
 app.use(
   cors({
     origin: allowedOrigins,
-    credentials: true, // ok with Authorization header too
+    credentials: true, // ok with Authorization header as well
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     exposedHeaders: ["Content-Type"],
   })
 );
 
-// ✅ Handle preflight for all routes
+// ✅ Handle preflight OPTIONS for all routes
 app.options(
   "*",
   cors({
@@ -53,16 +53,16 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ✅ Static files (uploads)
+// ✅ Static file serving (uploads)
 app.use("/uploads", express.static(process.env.UPLOAD_DIR || "uploads"));
 
 // ✅ Routes
-app.use("/auth", authRoutes);                // public
+app.use("/auth", authRoutes);                // public endpoints
 app.use("/admin", requireAuth, adminRoutes); // protected
 app.use("/crm", requireAuth, crmRoutes);     // protected
-app.use("/metadata", metadataRoutes);        // adjust as needed
+app.use("/metadata", metadataRoutes);        // public/adjust as needed
 
-// ✅ Start
+// ✅ Start server
 const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`✅ Backend running on port ${port}`);
